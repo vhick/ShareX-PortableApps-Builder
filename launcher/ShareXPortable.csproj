@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ShareXPortable</AssemblyName>
+    <Version>1.0.0.0</Version>
+    <AssemblyTitle>ShareX Portable Independent Launcher</AssemblyTitle>
+    <Company>Independent community packaging</Company>
+    <Copyright>Copyright (c) 2026 Independent contributors</Copyright>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,165 @@
+name: ShareX PortableApps - Verified Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'Latest stable or explicit stable ShareX version such as 22.3.0'
+        type: string
+        default: latest
+        required: true
+      publish_release:
+        description: 'Publish using the pinned publisher after validation (uncheck to test only)'
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sharex-portableapps-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 85
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch builder source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run offline safety and ZIP-path tests
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Controlled source tests failed' }
+          python -m compileall -q scripts tests
+          if ($LASTEXITCODE -ne 0) { throw 'Python compileall failed' }
+
+      - name: Resolve stable upstream and verify exact commit and vendor checksum
+        id: resolve
+        run: |
+          python scripts/resolve_release.py --version "${{ inputs.upstream_version }}" --github-output "$env:GITHUB_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { throw 'Stable version resolution failed' }
+
+      - name: Check for already-published identical build
+        id: previous
+        run: |
+          python scripts/check_existing.py
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot safely check existing release' }
+
+      - name: Set up .NET SDK for a genuine compiled native Windows launcher
+        if: steps.previous.outputs.exists != 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download and SHA-256 verify official portable and exact-source archives
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          python scripts/download_verified.py
+          if ($LASTEXITCODE -ne 0) { throw 'Official archive verification failed' }
+
+      - name: Compile independent x64 NativeAOT root launcher
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          dotnet publish launcher/ShareXPortable.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=true -p:DebugType=none -o work/launcher
+          if ($LASTEXITCODE -ne 0) { throw 'Root launcher NativeAOT compilation failed' }
+          if (!(Test-Path -LiteralPath work/launcher/ShareXPortable.exe)) { throw 'Compiled launcher EXE absent' }
+
+      - name: Headless synthetic launcher profile and crash-recovery tests
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          $env:SHAREX_PORTABLE_HEADLESS = '1'
+          $p = Start-Process -FilePath "${{ github.workspace }}\work\launcher\ShareXPortable.exe" -ArgumentList '--self-test' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Native launcher controlled self-test failed: $($p.ExitCode)" }
+          Write-Host 'AUTOMATED-RUNTIME-TESTED (synthetic): in-package profile moves, crash recovery and empty directory trees.'
+          Write-Host 'NOT tested: ShareX interactive GUI, hotkeys, notifications, shell integrations or upload tasks.'
+
+      - name: Assemble full ShareX PortableApps staging
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          python scripts/build_stage.py
+          if ($LASTEXITCODE -ne 0) { throw 'Staging failed' }
+
+      - name: Extract actual upstream icons
+        if: steps.previous.outputs.exists != 'true'
+        run: ./scripts/make_icons.ps1
+
+      - name: Independently validate PortableApps layout and ZIP integrity
+        if: steps.previous.outputs.exists != 'true'
+        id: validate_zip
+        run: |
+          python scripts/validate_and_zip.py
+          if ($LASTEXITCODE -ne 0) { throw 'PortableApps ZIP validation failed' }
+
+      - name: Verify pinned shared action definitions locally against repository source
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          python scripts/verify_shared_actions.py
+          if ($LASTEXITCODE -ne 0) { throw 'Shared-action interface verification failed' }
+
+      - name: Create PortableApps-STYLE independent NSIS installer via pinned shared builder
+        if: steps.previous.outputs.exists != 'true'
+        id: installer
+        uses: vhick/Portable-Package-Builder@0112c35580e83b37eb8757ebcb949274e1631a04 # v1.0.0 pinned
+        with:
+          source-dir: work/staging/ShareXPortable
+          output-dir: dist
+          engine: custom-nsis
+          running-exe: App\ShareX\ShareX.exe
+          timeout-seconds: '1800'
+          package-revision: r1
+
+      - name: Independently inspect installer structure and checksum
+        if: steps.previous.outputs.exists != 'true'
+        run: |
+          ./scripts/validate_installer.ps1 -Path '${{ steps.installer.outputs.installer-file }}' -ExpectedSha '${{ steps.installer.outputs.installer-sha256 }}'
+
+      - name: Dry-run pinned shared publisher (no upload)
+        if: steps.previous.outputs.exists != 'true'
+        uses: vhick/portable-release-publisher@cb64f86ac2d8c67506db5832de07f9ff58cbeaeb # v1.1.1 pinned
+        with:
+          files: 'dist/*.zip;dist/*.paf.exe'
+          tag: ${{ steps.resolve.outputs.tag }}
+          release-title: ShareX ${{ steps.resolve.outputs.version }} PortableApps (Independent b1r1)
+          tag-prefix: sharex-portable-
+          keep-releases: '3'
+          prune: 'false'
+          dry-run: 'true'
+
+      - name: Publish verified ZIP and installer using pinned shared publisher
+        if: steps.previous.outputs.exists != 'true' && inputs.publish_release
+        uses: vhick/portable-release-publisher@cb64f86ac2d8c67506db5832de07f9ff58cbeaeb # v1.1.1 pinned
+        with:
+          files: 'dist/*.zip;dist/*.paf.exe'
+          tag: ${{ steps.resolve.outputs.tag }}
+          release-title: ShareX ${{ steps.resolve.outputs.version }} PortableApps (Independent b1r1)
+          tag-prefix: sharex-portable-
+          keep-releases: '3'
+          prune: 'false'
+          dry-run: 'false'
+
+      - name: Retain independently validated ZIP if installer compilation fails
+        if: failure() && steps.validate_zip.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareXPortable-Validated-ZIP-Installer-Failed
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+            dist/verification.json
+          retention-days: 3
+          if-no-files-found: error

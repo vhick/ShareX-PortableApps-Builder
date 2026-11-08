@@ -1,0 +1,9 @@
+# Never commit downloaded vendor binaries, generated executables or user profiles.
+work/
+dist/
+*.user
+bin/
+obj/
+__pycache__/
+*.pyc
+.vs/
